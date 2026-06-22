@@ -34,7 +34,7 @@ class ArgumentGroupFactory:
         infer the type, default, and other argparse keyword arguments.
 
     You can override or supplement the automatically inferred argparse kwargs for any
-        dataclass field by providing an "argparse_meta" key in the field's metadata dict.
+        dataclass field by providing an "meta" key in the field's metadata dict.
         The value should be a dict of kwargs that will be passed to ArgumentParser.add_argument().
         These metadata kwargs take precedence over the automatically inferred values.
 
@@ -44,7 +44,7 @@ class ArgumentGroupFactory:
                 your_attribute: int | str | None = field(
                     default=None,
                     metadata={
-                        "argparse_meta": {
+                        "meta": {
                             "arg_names": ["--your-arg-name1", "--your-arg-name2"],
                             "type": str,
                             "nargs": "+",
@@ -56,7 +56,7 @@ class ArgumentGroupFactory:
         In this example, inferring the type automatically would fail, as Unions are
         not supported. However the metadata is present, so that takes precedence.
         Any keyword arguments to `ArgumentParser.add_argument()` can be included in
-        the "argparse_meta" dict, as well as "arg_names" for the argument flag name.
+        the "meta" dict, as well as "arg_names" for the argument flag name.
 
     This class can also be used as a base class and extended as needed to support dataclasses
         that require some customized or additional handling.
@@ -176,10 +176,10 @@ class ArgumentGroupFactory:
         else:
             argparse_kwargs["default"] = attribute.default
 
-        attr_argparse_meta = None
-        if attribute.metadata != {} and "argparse_meta" in attribute.metadata:
+        attr_meta = None
+        if attribute.metadata != {} and "meta" in attribute.metadata:
             # save metadata here, but update at the end so the metadata has highest precedence
-            attr_argparse_meta = attribute.metadata["argparse_meta"]
+            attr_meta = attribute.metadata["meta"]
 
         # if we cannot infer the argparse type, all of this logic may fail. we try to defer
         # to the developer-specified metadata if present
@@ -200,7 +200,7 @@ class ArgumentGroupFactory:
                         self._format_arg_name(attribute.name, prefix="disable"),
                     ]
         except TypeInferenceError as e:
-            if attr_argparse_meta is not None:
+            if attr_meta is not None:
                 print(
                     f"WARNING: Inferring the appropriate argparse argument type from {self.src_cfg_class} "
                     f"failed for {attribute.name}: {attribute.type}.\n"
@@ -211,8 +211,8 @@ class ArgumentGroupFactory:
                 raise e
 
         # metadata provided by field takes precedence
-        if attr_argparse_meta is not None:
-            argparse_kwargs.update(attr_argparse_meta)
+        if attr_meta is not None:
+            argparse_kwargs.update(attr_meta)
 
         return argparse_kwargs
 

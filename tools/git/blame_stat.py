@@ -11,15 +11,58 @@
     python scripts/blame_stats.py --output report.txt
 """
 
-from __future__ import annotations
-
-import argparse
 import concurrent.futures
 import io
+import os
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from utils.argutils import parse_args as argutils_parse_args  # noqa: E402
+
+
+@dataclass
+class BlameStatsConfig:
+    authors: Optional[list[str]] = field(
+        default=None,
+        metadata={
+            "meta": {
+                "arg_names": ["-A", "--author"],
+                "action": "append",
+                "dest": "authors",
+                "type": str,
+                "nargs": None,
+                "default": None,
+            }
+        },
+    )
+    """要统计的作者名，可重复指定多个（默认: Muu, Muuyo）。"""
+
+    repo: str = "."
+    """git 仓库路径（默认: 当前目录）。"""
+
+    top: int = 0
+    """仅输出匹配行数最多的前 N 个文件（0 表示全部）。"""
+
+    min_lines: int = 1
+    """过滤掉匹配行数小于该值的文件（默认: 1）。"""
+
+    output: Optional[Path] = None
+    """将结果写入指定文件（同时在终端打印）。"""
+
+    include_blank: bool = False
+    """统计时包含空行（默认排除空行）。"""
+
+    workers: int = field(
+        default_factory=lambda: max(1, (os.cpu_count() or 4)),
+    )
+    """并行 blame 的进程数（默认: CPU 核数）。"""
 
 
 @dataclass
@@ -31,49 +74,6 @@ class FileStats:
     @property
     def ratio(self) -> float:
         return self.matched / self.total if self.total else 0.0
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="统计每个文件中由指定作者最后修改的存活行数（git blame）。",
-    )
-    parser.add_argument(
-        "-A",
-        "--author",
-        action="append",
-        dest="authors",
-        help="要统计的作者名，可重复指定多个（默认: Muu, Muuyo）。",
-    )
-    parser.add_argument(
-        "--repo",
-        default=".",
-        help="git 仓库路径（默认: 当前目录）。",
-    )
-    parser.add_argument(
-        "--top",
-        type=int,
-        default=0,
-        help="仅输出匹配行数最多的前 N 个文件（0 表示全部）。",
-    )
-    parser.add_argument(
-        "--min-lines",
-        type=int,
-        default=1,
-        help="过滤掉匹配行数小于该值的文件（默认: 1）。",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="将结果写入指定文件（同时在终端打印）。",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=max(1, (subprocess.os.cpu_count() or 4)),
-        help="并行 blame 的进程数（默认: CPU 核数）。",
-    )
-    return parser.parse_args()
 
 
 def run_git(repo: Path, *args: str) -> str:
@@ -90,7 +90,7 @@ def list_tracked_files(repo: Path) -> list[str]:
     return [f for f in out.split("\x00") if f]
 
 
-def blame_file(repo: Path, file: str, authors: set[str]) -> FileStats:
+def blame_file(repo: Path, file: str, authors: set[str], include_blank: bool = False) -> FileStats:
     proc = subprocess.run(
         ["git", "-C", str(repo), "blame", "--line-porcelain", "--", file],
         capture_output=True,
@@ -102,20 +102,26 @@ def blame_file(repo: Path, file: str, authors: set[str]) -> FileStats:
     text = proc.stdout.decode("utf-8", errors="replace")
     matched = 0
     total = 0
+    current_author: str | None = None
     for line in text.splitlines():
         if line.startswith("author "):
-            total += 1
-            if line[7:] in authors:
-                matched += 1
+            current_author = line[7:]
+        elif line.startswith("\t") and current_author is not None:
+            content = line[1:]
+            if include_blank or content.strip():
+                total += 1
+                if current_author in authors:
+                    matched += 1
+            current_author = None
     return FileStats(path=file, matched=matched, total=total)
 
 
 def collect_stats(
-    repo: Path, files: list[str], authors: set[str], workers: int
+    repo: Path, files: list[str], authors: set[str], workers: int, include_blank: bool = False
 ) -> list[FileStats]:
     stats: list[FileStats] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(blame_file, repo, f, authors): f for f in files}
+        futures = {pool.submit(blame_file, repo, f, authors, include_blank): f for f in files}
         for fut in concurrent.futures.as_completed(futures):
             try:
                 stats.append(fut.result())
@@ -140,13 +146,14 @@ def render(
     line_total = sum(s.total for s in stats)
     ratio = (matched_total / line_total * 100) if line_total else 0.0
 
-    lines: list[str] = []
-    lines.append(f"作者: {', '.join(authors)}")
-    lines.append(f"匹配文件数: {len(filtered)}（共 {len(stats)} 个跟踪文件）")
-    lines.append(f"{', '.join(authors)} 存活行数: {matched_total}")
-    lines.append(f"项目总行数: {line_total}")
-    lines.append(f"占比: {ratio:.2f}%")
-    lines.append("")
+    lines: list[str] = [
+        f"作者: {', '.join(authors)}",
+        f"匹配文件数    : {len(filtered)}（共 {len(stats)} 个跟踪文件）",
+        f"存活行数      : {matched_total}",
+        f"项目总行数    : {line_total}",
+        f"占比          : {ratio:.2f}%",
+        "",
+    ]
     header = f"{'File':<80} {'Match':>8} {'Total':>8} {'Ratio':>8}"
     lines.append(header)
     lines.append("-" * len(header))
@@ -164,7 +171,7 @@ def main() -> int:
             except (AttributeError, io.UnsupportedOperation):
                 pass
 
-    args = parse_args()
+    args = argutils_parse_args(BlameStatsConfig, "Git Blame Stats")
     repo = Path(args.repo).resolve()
     if not (repo / ".git").exists():
         print(f"error: {repo} 不是 git 仓库", file=sys.stderr)
@@ -178,7 +185,7 @@ def main() -> int:
         print("error: 仓库中没有跟踪文件", file=sys.stderr)
         return 1
 
-    stats = collect_stats(repo, files, authors_set, args.workers)
+    stats = collect_stats(repo, files, authors_set, args.workers, args.include_blank)
     output = render(stats, authors, args.top, args.min_lines)
 
     print(output)
