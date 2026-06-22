@@ -146,6 +146,9 @@ def render(
     line_total = sum(s.total for s in stats)
     ratio = (matched_total / line_total * 100) if line_total else 0.0
 
+    max_path_len = max((len(s.path) for s in filtered), default=10)
+    path_width = ((max_path_len + 4) // 5) * 5 + 5
+
     lines: list[str] = [
         f"作者: {', '.join(authors)}",
         f"匹配文件数    : {len(filtered)}（共 {len(stats)} 个跟踪文件）",
@@ -154,12 +157,12 @@ def render(
         f"占比          : {ratio:.2f}%",
         "",
     ]
-    header = f"{'File':<80} {'Match':>8} {'Total':>8} {'Ratio':>8}"
+    header = f"{'File':<{path_width}} {'Match':>8} {'Total':>8} {'Ratio':>8}"
     lines.append(header)
     lines.append("-" * len(header))
     for s in filtered:
         pct = f"{s.ratio * 100:.2f}%" if s.total else "-"
-        lines.append(f"{s.path:<80} {s.matched:>8} {s.total:>8} {pct:>8}")
+        lines.append(f"{s.path:<{path_width}} {s.matched:>8} {s.total:>8} {pct:>8}")
     return "\n".join(lines)
 
 
